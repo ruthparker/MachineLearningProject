@@ -1,0 +1,150 @@
+# Human Activity Recognition - Weightlifting
+#### *Practical Machine Learning assignment*
+
+### Introduction
+
+This document details a prediction methodology used to determine how well a test subject performed a particular set of weightlifting actions.  
+
+The Weight Lifting Exercise (WLE) dataset used is courtesy of the paper *"Qualitative Activity Recognition of Weight Lifting Exercises." Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013* authored by Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H.
+
+Analysis environment is Windows 7 64-bit / R ver 3.1.2.
+
+### Data preparation
+
+Load the libraries we'll need:
+
+```{r init,warning=FALSE,message=FALSE}
+library(caret)
+library(gbm)
+```
+
+Read the data:
+
+```{r read,cache=TRUE}
+url <- "http://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv"
+download.file(url,"WLDtraining.csv")
+url <-"http://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv"
+download.file(url,"WLDtesting.csv")
+WLDtraining<-read.csv("WLDtraining.csv")
+WLDtesting<-read.csv("WLDtesting.csv")
+```
+
+Have an initial look at the training set:
+
+```{r}
+dim(WLDtraining)
+```
+```{r,results='hide'}
+str(WLDtraining)
+```
+
+The structure displays have been exluded from this report in the interests of brevity and readability.  We can nevertheless report that we seem to have large chunks of missing data.  Reading the cited paper, however, tells us that the measured Euler angles (roll, pitch, and yaw, which seem to represent much of the missing data) have been used as derivation data for summary variables such as mean and variance.  The derived data are likely to constitute much better predictors than the individual angles, so we can eliminate those, and have another look at the data:
+
+```{r transform}
+WLDtraining<-WLDtraining[,-grep("_roll_",colnames(WLDtraining))]
+WLDtraining<-WLDtraining[,-grep("_pitch_",colnames(WLDtraining))]
+WLDtraining<-WLDtraining[,-grep("_yaw_",colnames(WLDtraining))]
+dim(WLDtraining)
+```
+```{r,results='hide'}
+str(WLDtraining)
+```
+
+This exercise has brought our number of variables from 160 down to 72.  There's still some missing data, but an exploratory analysis does not seem to indicate that these can safely be discarded.  However, we won't need the user_name, timestamp, or window data, as these are variable identifiers rather than predictors.  Similarly, a plot of the variable X shows us that it is directly correlated to classe, so we don't need to include it in the analysis:
+
+```{r}
+WLDtraining<-WLDtraining[,-grep("user_name",colnames(WLDtraining))]
+WLDtraining<-WLDtraining[,-grep("_timestamp",colnames(WLDtraining))]
+WLDtraining<-WLDtraining[,-grep("_window",colnames(WLDtraining))]
+WLDtraining<-WLDtraining[,-1] # "X"
+```
+
+Checking for zero covariates, we find that fields with names starting with "kurtosis" are all near zero variance predictors, and should thus be eliminated from our training data:
+
+```{r,results='hide'}
+nearZeroVar(WLDtraining,saveMetrics=TRUE)
+WLDtraining<-WLDtraining[,-grep("kurtosis_",colnames(WLDtraining))]
+```
+
+We perform the same transformations on the test set:
+
+```{r}
+WLDtesting<-WLDtesting[,-grep("_roll_",colnames(WLDtesting))]
+WLDtesting<-WLDtesting[,-grep("_pitch_",colnames(WLDtesting))]
+WLDtesting<-WLDtesting[,-grep("_yaw_",colnames(WLDtesting))]
+WLDtesting<-WLDtesting[,-grep("user_name",colnames(WLDtesting))]
+WLDtesting<-WLDtesting[,-grep("_timestamp",colnames(WLDtesting))]
+WLDtesting<-WLDtesting[,-grep("_window",colnames(WLDtesting))]
+WLDtesting<-WLDtesting[,-1]
+WLDtesting<-WLDtesting[,-grep("kurtosis_",colnames(WLDtesting))]
+dim(WLDtesting)
+```
+
+For cross-validation purposes, we now split our training set into 2 subsets - training and testing:
+
+```{r partition}
+inTrain <- createDataPartition(y=WLDtraining$classe,p=0.6,list=FALSE)
+training<-WLDtraining[inTrain,]
+testing<-WLDtraining[-inTrain,]
+dim(training)
+dim(testing)
+```
+
+We still need to deal with the missing values in the data, and will do this by means of a preprocessing object:
+
+```{r impute}
+ppdata<-training[,1:60]
+ppobj<-preProcess(ppdata,method="knnImpute")
+training.imp<-predict(ppobj,ppdata)
+```
+
+Since we've now preprocessed our training set, we must apply the same preprocessing to our testing subset and original test set, using the object created with the training data:
+
+```{r}
+testing.imp<-predict(ppobj,testing[,1:60])
+WLDtesting.imp<-predict(ppobj,WLDtesting[,1:60])
+```
+
+### Modelling
+
+Our data is now prepared, and for the moment we'll leave the test set strictly alone and only work with the training set.  As random forest is both a highly accurate prediction model and the main one used on the original WLE data, we'll apply a random forest model which includes a preprocessing command to normalise all the variables:
+
+```{r rf,cache=TRUE,warning=FALSE,message=FALSE}
+modelrf<-train(training$classe~.,method='rf',data=training.imp,
+               preProcess=c("center","scale"))
+```
+
+Let's check the accuracy of this on our testing subset:
+
+```{r}
+predrf<-predict(modelrf,testing.imp)
+round(confusionMatrix(testing$classe,predrf)$overall[1],2)
+```
+
+99% accuracy is an excellent result.  We'll also try a gradient boosting model, and a linear discriminant analysis, to see whether they have a similar or even better fit:
+
+```{r gbm,cache=TRUE,warning=FALSE,message=FALSE}
+modelgbm<-train(training$classe~.,method="gbm",data=training.imp,
+                preProcess=c("center","scale"),verbose=FALSE)
+```
+```{r lda,cache=TRUE,warning=FALSE,message=FALSE}
+modellda<-train(training$classe~.,method="lda",data=training.imp,
+                preProcess=c("center","scale"))
+```
+```{r}
+predgbm<-predict(modelgbm,testing.imp)
+predlda<-predict(modellda,testing.imp)
+round(confusionMatrix(testing$classe,predgbm)$overall[1],2)
+round(confusionMatrix(testing$classe,predlda)$overall[1],2)
+```
+
+It's clear from our cross-validation that the random forest model is providing the best predictions, and as it seems unlikely that we'll be able to improve on the achieved 99% accuracy without overfitting we won't try for a better fit by applying different models or stacking them.
+
+The plot of our final model showing the error rate:
+```{r}
+plot(modelrf$finalModel,main="WLE data final random forest model")
+```
+
+### Conclusion
+
+Using a random forest model with the missing data imputed using k nearest neighbour and the data normalised by centering and scaling, we predict, with 95% confidence, that we will achieve out of sample accuracy of 99%, giving us an out of sample error rate of 1%.
